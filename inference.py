@@ -9,7 +9,7 @@ import numpy as np
 import dataset
 import modeling
 
-from lib.utils import AverageMeter, save_prediction, idx2onehot
+from lib.utils import AverageMeter, save_prediction, idx2onehot, calculate_multi_object_ious
 from lib.predict import predict, prepare_first_frame
 
 parser = argparse.ArgumentParser()
@@ -19,6 +19,8 @@ parser.add_argument('--dataset', '-ds', type=str, default='davis',
                     help='name of dataset')
 parser.add_argument('--data', type=str,
                     help='path to inference dataset')
+parser.add_argument('--set', type=str, default='val',
+                    help='which set to eval')
 parser.add_argument('--resume', '-r', type=str,
                     help='path to the resumed checkpoint')
 parser.add_argument('--model', type=str, default='resnet50',
@@ -56,8 +58,9 @@ def main():
             print("=> no checkpoint found at '{}'".format(args.resume))
     model.eval()
 
-    data_dir = os.path.join(args.data, 'DAVIS_val/JPEGImages/480p')
-    inference_dataset = dataset.DavisInference(data_dir)
+    data_dir = os.path.join(args.data, 'DAVIS_{}/JPEGImages/480p'.format(args.set))
+    annot_dir = os.path.join(args.data, 'DAVIS_{}/Annotations/480p'.format(args.set))
+    inference_dataset = dataset.DavisInference(data_dir, annotation_root=annot_dir if args.set != 'test' else None)
     inference_loader = torch.utils.data.DataLoader(inference_dataset,
                                                    batch_size=1,
                                                    shuffle=False,
@@ -68,34 +71,41 @@ def main():
 def inference(inference_loader, model, args):
     global pred_visualize, palette, d, feats_history, label_history, weight_dense, weight_sparse
     batch_time = AverageMeter()
-    annotation_dir = os.path.join(args.data, 'DAVIS_val/Annotations/480p')
+    annotation_dir = os.path.join(args.data, 'DAVIS_{}/Annotations/480p'.format(args.set))
     annotation_list = sorted(os.listdir(annotation_dir))
 
     last_video = 0
     frame_idx = 0
+    all_ious = []
     with torch.no_grad():
-        for i, (input, curr_video, img_original) in enumerate(inference_loader):
+        for i, (input, curr_video, img_original, annotation) in enumerate(inference_loader):
             if curr_video != last_video:
+                # calculate sequence iou
+                seq_ious = np.mean(ious, axis=0)
+                all_ious.append(seq_ious)
                 # save prediction
                 pred_visualize = pred_visualize.cpu().numpy()
+
                 for f in range(1, frame_idx):
                     save_path = args.save
                     save_name = str(f).zfill(5)
                     video_name = annotation_list[last_video]
-                    save_prediction(np.asarray(pred_visualize[f - 1], dtype=np.int32),
-                                    palette, save_path, save_name, video_name)
+                    pred = np.asarray(pred_visualize[f - 1], dtype=np.int32)
+                    save_prediction(pred, palette, save_path, save_name, video_name)
 
                 frame_idx = 0
-                print("End of video %d. Processing a new annotation..." % (last_video + 1))
+                print("End of video {:d} {}, seq ious: {}".format(last_video.item() + 1, video_name, seq_ious))
             if frame_idx == 0:
                 input = input.to(device)
                 with torch.no_grad():
                     feats_history = model(input)
                 label_history, d, palette, weight_dense, weight_sparse = prepare_first_frame(curr_video,
-                                                                                                 args.save,
-                                                                                                 annotation_dir,
-                                                                                                 args.sigma1,
-                                                                                                 args.sigma2)
+                                                                                             args.save,
+                                                                                             annotation_dir,
+                                                                                             args.sigma1,
+                                                                                             args.sigma2)
+                label_set = np.unique(annotation)
+                ious = []
                 frame_idx += 1
                 last_video = curr_video
                 continue
@@ -135,11 +145,17 @@ def inference(inference_loader, model, args):
 
             batch_time.update(time.time() - start)
 
-            if i % 10 == 0:
-                print('Validate: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'.format(
-                    i, len(inference_loader), batch_time=batch_time))
+            pred = np.asarray(np.squeeze(prediction.cpu().numpy()), dtype=np.int32)
+            annot = annotation.cpu().numpy()
+            ious.append(calculate_multi_object_ious(pred, annot, label_set))
+
+            # if i % 10 == 0:
+            #     print('Validate: [{0}/{1}]\t'
+            #           'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'.format(
+            #         i, len(inference_loader), batch_time=batch_time))
         # save last video's prediction
+        seq_ious = np.mean(ious, axis=0)
+        all_ious.append(seq_ious)
         pred_visualize = pred_visualize.cpu().numpy()
         for f in range(1, frame_idx):
             save_path = args.save
@@ -147,7 +163,8 @@ def inference(inference_loader, model, args):
             video_name = annotation_list[last_video]
             save_prediction(np.asarray(pred_visualize[f - 1], dtype=np.int32),
                             palette, save_path, save_name, video_name)
-    print('Finished inference.')
+    all_ious = np.concatenate(all_ious, axis=0)
+    print('Finished inference. mIoU: {}. ave batch time {}s.'.format(np.mean(all_ious), batch_time.avg))
 
 
 if __name__ == '__main__':

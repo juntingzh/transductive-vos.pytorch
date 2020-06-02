@@ -111,6 +111,7 @@ class DavisInference(datasets.ImageFolder):
 
     def __init__(self,
                  root,
+                 annotation_root=None,
                  transform=None,
                  target_transform=None):
         super(DavisInference, self).__init__(root,
@@ -126,6 +127,17 @@ class DavisInference(datasets.ImageFolder):
                 self.img_bytes.append(f.read())
         print("Tracking folder JPEGImages loaded: ", len(self.img_bytes))
 
+        if annotation_root is not None:
+            self.annotations = make_dataset(annotation_root, self.class_to_idx)
+            self.annotation_bytes = []
+            for path, _ in self.annotations:
+                with open(path, 'rb') as f:
+                    self.annotation_bytes.append(f.read())
+            assert len(self.annotation_bytes) == len(self.img_bytes)
+            print("Tracking folder Annotations loaded: ", len(self.annotation_bytes))
+        else:
+            self.annotation_bytes = None
+
     def __getitem__(self, index):
         path, video_index = self.imgs[index]
         img = Image.open(BytesIO(self.img_bytes[index]))
@@ -134,7 +146,13 @@ class DavisInference(datasets.ImageFolder):
         img_original = np.asarray(img)
 
         output = self.rgb_normalize(img_original)
-        return output, video_index, img_original
+
+        if self.annotation_bytes is not None:
+            annotation = Image.open(BytesIO(self.annotation_bytes[index]))  # (W, H), -P mode
+            annotation = np.asarray(annotation)
+        else:
+            annotation = None
+        return output, video_index, img_original, annotation
 
     def __len__(self):
         return len(self.imgs)

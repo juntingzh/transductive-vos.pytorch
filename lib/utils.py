@@ -3,6 +3,7 @@ import sys
 import functools
 import logging
 
+import numpy as np
 import torch
 
 from PIL import Image
@@ -119,3 +120,41 @@ def idx2onehot(idx, d):
     one_hot = torch.zeros(d, n, device=torch.device("cuda")).scatter_(0, idx.view(1, -1), 1)
 
     return one_hot
+
+
+def calculate_iou(pred_labels, ref_labels):
+    """Calculates the intersection over union for binary segmentation.
+
+    Args:
+      pred_labels: predicted segmentation labels.
+      ref_labels: reference segmentation labels.
+
+    Returns:
+      The IoU between pred_labels and ref_labels
+    """
+    if ref_labels.any():
+        i = np.logical_and(pred_labels, ref_labels).sum()
+        u = np.logical_or(pred_labels, ref_labels).sum()
+        return i.astype('float') / u
+    else:
+        if pred_labels.any():
+            return 0.0
+        else:
+            return 1.0
+
+
+def calculate_multi_object_ious(pred_labels, ref_labels, label_set):
+    """Calculates the intersection over union for binary segmentation.
+
+    Args:
+      pred_labels: predicted segmentation labels.
+      ref_labels: reference segmentation labels.
+      label_set: int np.array of object ids.
+
+    Returns:
+      float np.array of IoUs between pred_labels and ref_labels
+        for each object in label_set.
+    """
+    # Background should not be included as object label.
+    return np.array([calculate_iou(pred_labels == label, ref_labels == label)
+                     for label in label_set if label != 0])

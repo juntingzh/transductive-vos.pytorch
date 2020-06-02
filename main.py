@@ -118,7 +118,7 @@ def main(args):
 
         train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
 
-        if epoch % args.validate_freq == 0:
+        if epoch % args.val_freq == 0:
             with torch.no_grad():
                 val_loss = validate(val_loader, model, criterion, args)
 
