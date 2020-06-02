@@ -48,6 +48,10 @@ def parse_options():
                         help='use color jitter')
     parser.add_argument('--local_rank', type=int, default=0,
                         help='default rank for dist')
+    parser.add_argument('--val_freq', type=int, default=1,
+                        help='validate freq')
+    parser.add_argument('--save_freq', type=int, default=1,
+                        help='freq to save model')
 
     args = parser.parse_args()
 
@@ -100,26 +104,27 @@ def main(args):
     if args.resume:
         if os.path.isfile(args.resume):
             logger.info("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
+            checkpoint = torch.load(args.resume, map_location={'cuda:%d' % 0: 'cuda:%d' % dist.get_rank()})
+            start_epoch = checkpoint['epoch']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
             logger.info("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
+                        .format(args.resume, checkpoint['epoch']))
         else:
             logger.info("=> no checkpoint found at '{}'".format(args.resume))
 
-    for epoch in range(start_epoch, start_epoch + args.epochs):
+    for epoch in range(start_epoch, args.epochs):
 
         train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
 
-        with torch.no_grad():
-            val_loss = validate(val_loader, model, criterion, args)
+        if epoch % args.validate_freq == 0:
+            with torch.no_grad():
+                val_loss = validate(val_loader, model, criterion, args)
 
         scheduler.step()
 
-        if dist.get_rank() == 0:
+        if epoch % args.save_freq == 0 and dist.get_rank() == 0:
             os.makedirs(args.save_model, exist_ok=True)
             checkpoint_name = 'checkpoint-epoch-{}.pth.tar'.format(epoch)
             save_path = os.path.join(args.save_model, checkpoint_name)
@@ -129,6 +134,18 @@ def main(args):
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
             }, save_path)
+            print('Saved model at {}'.format(save_path))
+
+    os.makedirs(args.save_model, exist_ok=True)
+    checkpoint_name = 'checkpoint-final.pth.tar'
+    save_path = os.path.join(args.save_model, checkpoint_name)
+    torch.save({
+        'epoch': args.epochs + 1,
+        'state_dict': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+    }, save_path)
+    print('Saved model at {}'.format(save_path))
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):

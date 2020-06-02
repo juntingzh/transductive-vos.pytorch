@@ -27,7 +27,9 @@ train_img = './DAVIS_train/JPEGImages/480p'
 train_annotations = './DAVIS_train/Annotations/480p'
 val_img = './DAVIS_val/JPEGImages/480p'
 val_annotations = './DAVIS_val/Annotations/480p'
-l = [train_img, train_annotations, val_img, val_annotations]
+test_img = './DAVIS_test/JPEGImages/480p'
+test_annotations = './DAVIS_test/Annotations/480p'
+l = [train_img, train_annotations, val_img, val_annotations, test_img, test_annotations]
 for p in l:
     if not os.path.exists(p):
         os.makedirs(p)
@@ -36,15 +38,20 @@ for video in full_video_list:
     src1 = os.path.join(full_annotation_path, video)
     src2 = os.path.join(full_img_path, video)
     if video in train_list:
-        dest1 = train_annotations
-        dest2 = train_img
+        dest1 = os.path.join(train_annotations, video)
+        dest2 = os.path.join(train_img, video)
+    elif video in val_list:
+        dest1 = os.path.join(val_annotations, video)
+        dest2 = os.path.join(val_img, video)
     else:
-        dest1 = val_annotations
-        dest2 = val_img
-    if not os.path.exists(dest1):
-        os.makedirs(dest1)
-    if not os.path.exists(dest2):
-        os.makedirs(dest2)
-    shutil.move(src1, dest1)
-    shutil.move(src2, dest2)
+        dest1 = os.path.join(test_annotations, video)
+        dest2 = os.path.join(test_img, video)
+    # if not os.path.exists(dest1):
+    #     os.makedirs(dest1)
+    # if not os.path.exists(dest2):
+    #     os.makedirs(dest2)
+    # shutil.move(src1, dest1)
+    # shutil.move(src2, dest2)
+    os.symlink(src1, dest1)
+    os.symlink(src2, dest2)
 print('success')

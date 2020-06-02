@@ -49,7 +49,7 @@ def setup_logger(
         else:
             filename = os.path.join(output, "log.txt")
         if distributed_rank > 0:
-            filename = filename + f".rank{distributed_rank}"
+            filename = filename + ".rank{}".format(distributed_rank)
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
         fh = logging.StreamHandler(_cached_log_stream(filename))
