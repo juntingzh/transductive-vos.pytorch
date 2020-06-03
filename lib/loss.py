@@ -51,7 +51,7 @@ class CrossEntropy(nn.Module):
         global_similarity = global_similarity.softmax(dim=1)
 
         prediction = batch_global_predict(global_similarity, ref_label)
-        prediction = torch.log(prediction + 1e-14)
-        loss = self.nllloss(prediction, target_label)
+        log_prediction = torch.log(prediction + 1e-14)
+        loss = self.nllloss(log_prediction, target_label)
 
-        return loss
+        return loss, prediction

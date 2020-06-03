@@ -1,5 +1,6 @@
 import argparse
 import os
+os.environ["NCCL_BLOCKING_WAIT"] = "1"
 import time
 
 import torch
@@ -9,6 +10,7 @@ import torch.utils.data.distributed
 from torch.nn.parallel import DistributedDataParallel
 import torch.backends.cudnn as cudnn
 import numpy as np
+from visdom import Visdom
 
 import dataset
 import modeling
@@ -52,6 +54,8 @@ def parse_options():
                         help='validate freq')
     parser.add_argument('--save_freq', type=int, default=1,
                         help='freq to save model')
+    parser.add_argument('--log_freq', type=int, default=25,
+                        help='freq for logging')
 
     args = parser.parse_args()
 
@@ -114,13 +118,32 @@ def main(args):
         else:
             logger.info("=> no checkpoint found at '{}'".format(args.resume))
 
+    if dist.get_rank() == 0:
+        vis = Visdom()
+        vis.line(Y=[[0., 0.]],
+                 X=[0],
+                 opts=dict(title='loss', ylabel='val', xlabel='iter', legend=['loss.val', 'loss.avg']),
+                 win='loss')
+        vis.line(Y=[args.lr],
+                 X=[0],
+                 opts=dict(title='lr', ylabel='val', xlabel='iter', legend=['lr']),
+                 win='lr',
+                 name='lr')
+        vis.line(Y=[[0.]],
+                 X=[0],
+                 opts=dict(title='mean_val_loss', ylabel='val', xlabel='epoch'),
+                 win='val_loss',
+                 name='val_loss')
+    else:
+        vis = None
+
     for epoch in range(start_epoch, args.epochs):
 
-        train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
+        train_loss = train(train_loader, model, criterion, optimizer, epoch, args, vis=vis)
 
         if epoch % args.val_freq == 0:
             with torch.no_grad():
-                val_loss = validate(val_loader, model, criterion, args)
+                val_loss = validate(val_loader, model, criterion, epoch, args, vis=vis)
 
         scheduler.step()
 
@@ -148,7 +171,7 @@ def main(args):
     print('Saved model at {}'.format(save_path))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def train(train_loader, model, criterion, optimizer, epoch, args, vis=None):
     logger.info('Starting training epoch {}'.format(epoch))
 
     centroids = np.load("./dataset/annotation_centroids.npy")
@@ -165,8 +188,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         data_time.update(time.time() - end)
 
         (batch_size, num_frames, num_channels, H, W) = img_input.shape
-        annotation_input = annotation_input.reshape(-1, 3, H, W).cuda()
-        annotation_input_downsample = torch.nn.functional.interpolate(annotation_input,
+        reshaped_annotation_input = annotation_input.reshape(-1, 3, H, W).cuda()
+        annotation_input_downsample = torch.nn.functional.interpolate(reshaped_annotation_input,
                                                                       scale_factor=SCALE,
                                                                       mode='bilinear',
                                                                       align_corners=False)
@@ -190,7 +213,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         ref_label = torch.zeros(batch_size, num_frames - 1, centroids.shape[0], H_d, W_d).cuda().scatter_(
             2, ref_label.unsqueeze(2), 1)
 
-        loss = criterion(ref, target, ref_label, target_label) / args.iter_size
+        loss, prediction = criterion(ref, target, ref_label, target_label)
+        loss /= args.iter_size
         loss.backward()
 
         losses.update(loss.item(), batch_size)
@@ -202,19 +226,40 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if i % 25 == 0:
+        if i % args.log_freq == 0:
             logger.info('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
+                        'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                        'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                        'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
                 epoch, i, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=losses))
+            if vis is not None:
+                global_step = epoch * len(train_loader) + i
+                vis.line(Y=[[losses.val, losses.avg]],
+                         X=[global_step],
+                         win='loss',
+                         update='append')
+                vis.line(Y=[optimizer.param_groups[0]['lr']],
+                         X=[global_step],
+                         win='lr',
+                         update='append')
+
+                images = dataset.davis.denormalize_images(img_input)
+                vis.images(images[num_frames - 1::num_frames], opts=dict(caption='input_images'), win='inputs')
+                vis.images(reshaped_annotation_input[num_frames - 1::num_frames], opts=dict(caption='annotations'),
+                           win='GT')
+                upsampled_pred = torch.nn.functional.interpolate(prediction.view(batch_size, -1, H_d, W_d),
+                                                                 size=(H, W),
+                                                                 mode='bilinear',
+                                                                 align_corners=False)
+                pred = torch.argmax(upsampled_pred, 1, keepdim=True) * 30  # (B, 1, H, W)
+                vis.images(pred, opts=dict(caption='predictions'), win='pred')
 
     logger.info('Finished training epoch {}'.format(epoch))
     return losses.avg
 
 
-def validate(val_loader, model, criterion, args):
+def validate(val_loader, model, criterion, epoch, args, vis=None):
     logger.info('starting validation...')
 
     centroids = np.load("./dataset/annotation_centroids.npy")
@@ -265,11 +310,16 @@ def validate(val_loader, model, criterion, args):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if i % 25 == 0:
+        if i % args.log_freq == 0:
             logger.info('Validate: [{0}/{1}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
+                        'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                        'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
                 i, len(val_loader), batch_time=batch_time, loss=losses))
+    if vis is not None:
+        vis.line(Y=[losses.avg],
+                 X=[epoch],
+                 win='val_loss',
+                 update='append')
 
     logger.info('Finished validation')
     return losses.avg

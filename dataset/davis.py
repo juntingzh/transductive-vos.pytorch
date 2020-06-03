@@ -156,3 +156,11 @@ class DavisInference(datasets.ImageFolder):
 
     def __len__(self):
         return len(self.imgs)
+
+
+def denormalize_images(images, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
+    dtype = images.dtype
+    mean = torch.as_tensor(mean, dtype=dtype, device=images.device)
+    std = torch.as_tensor(std, dtype=dtype, device=images.device)
+    recoverd = images * std[:, None, None].unsqueeze(0) + mean[:, None, None].unsqueeze(0)
+    return recoverd
